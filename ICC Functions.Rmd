@@ -1,0 +1,1047 @@
+---
+title: "ICC Function"
+output: html_document
+date: "2025-08-20"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+# Simulate Correlated Data
+
+```{r}
+library(MASS)
+Simulate_correlated_data = function(n.image, n.rater, sigma_a2_before, sigma_a2_after, sigma_b2_before, sigma_b2_after, sigma_e2_before, sigma_e2_after, rho_a, rho_b){
+  
+L = 5
+c_truth = 0:L
+c_truth[1] = -10 
+c_truth[L+1] = 10
+for(t in 2:(L)) c_truth[t] = qnorm((t-1)/L)
+
+alpha_truth = mvrnorm(n.image, c(0, 0), matrix(c(sigma_a2_before, rho_a*sqrt(sigma_a2_before)*sqrt(sigma_a2_after), rho_a*sqrt(sigma_a2_before)*sqrt(sigma_a2_after), sigma_a2_after), nrow = 2))
+beta_truth = mvrnorm(n.rater, c(0, 0), matrix(c(sigma_b2_before, rho_b*sqrt(sigma_b2_before)*sqrt(sigma_b2_after), rho_b*sqrt(sigma_b2_before)*sqrt(sigma_b2_after), sigma_b2_after), nrow = 2))
+
+alpha_before_truth = alpha_truth[,1]
+alpha_after_truth = alpha_truth[,2]
+beta_before_truth = beta_truth[,1]
+beta_after_truth = beta_truth[,2]
+ 
+x_before_truth = y_before_truth = array(0, dim =c (n.rater,n.image))
+x_after_truth = y_after_truth = array(0, dim =c (n.rater,n.image))
+
+for(i in 1:n.rater){
+  for(j in 1:n.image){
+    
+    x_before_truth[i,j] = alpha_before_truth[j] + beta_before_truth[i] + rnorm(1 ,0, sqrt(sigma_e2_before))
+
+    
+    if (x_before_truth[i,j] < c_truth[2]) {
+      y_before_truth[i,j] = 1
+    } else if (x_before_truth[i,j] < c_truth[3]) {
+      y_before_truth[i,j] = 2
+    } else if (x_before_truth[i,j] < c_truth[4]) {
+      y_before_truth[i,j] = 3
+    } else if (x_before_truth[i,j] < c_truth[5]) {
+      y_before_truth[i,j] = 4
+    } else {
+      y_before_truth[i,j] = 5
+    }
+    
+  }
+}
+
+
+for(i in 1:n.rater){
+  for(j in 1:n.image){
+    
+    x_after_truth[i,j] = alpha_after_truth[j] + beta_after_truth[i] + rnorm(1 ,0, sqrt(sigma_e2_after))
+
+    
+    if (x_after_truth[i,j] < c_truth[2]) {
+      y_after_truth[i,j] = 1
+    } else if (x_after_truth[i,j] < c_truth[3]) {
+      y_after_truth[i,j] = 2
+    } else if (x_after_truth[i,j] < c_truth[4]) {
+      y_after_truth[i,j] = 3
+    } else if (x_after_truth[i,j] < c_truth[5]) {
+      y_after_truth[i,j] = 4
+    } else {
+      y_after_truth[i,j] = 5
+    }
+    
+  }
+}
+
+return(list(y_before_truth, y_after_truth))
+
+
+
+}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Gibbs Sampler No training
+
+
+```{r}
+Run_Gibbs_No_training = function(Before, After, ntotal){
+  
+  # Get number of images and graders
+  n.rater = nrow(Before)
+  n.image = ncol(Before)
+  
+  # Initialize ordinal before and after
+  y_before = as.matrix(Before)
+  y_after = as.matrix(After)
+  x_before = (y_before-mean(y_before))/sd(y_before)
+  x_after = (y_after-mean(y_after))/sd(y_after)
+  
+  # Number of ordina levels
+  L = max(y_before)
+  
+  # use the frequency to decide the cutoffs before
+  y_before.freq = table(y_before)/sum(table(y_before))
+  c_before = 0:L
+  c_before[1] = -10
+  c_before[L+1] = 10
+  c_before[2] = qnorm(y_before.freq[1])
+  c_before[3] = qnorm(sum(y_before.freq[1:2]))
+  c_before[4] = qnorm(sum(y_before.freq[1:3]))
+  c_before[5] = qnorm(sum(y_before.freq[1:4]))
+  
+  
+  # use the frequency to decide the cutoffs after
+  y_after.freq = table(y_after)/sum(table(y_after))
+  c_after = 0:L
+  c_after[1] = -10
+  c_after[L+1] = 10
+  c_after[2] = qnorm(y_after.freq[1])
+  c_after[3] = qnorm(sum(y_after.freq[1:2]))
+  c_after[4] = qnorm(sum(y_after.freq[1:3]))
+  c_after[5] = qnorm(sum(y_after.freq[1:4]))
+  
+  # Initial values
+  alpha_before = rep(0, n.image)
+  alpha_after = rep(0, n.image)
+  beta_before = rep(0, n.rater)
+  beta_after = rep(0, n.rater)
+  sigma_a2_before = sigma_b2_before = sigma_e2_before = .33
+  sigma_a2_after = sigma_b2_after = sigma_e2_after = .33
+  a = 0.1
+  b = 0.1  
+  
+  # Storage
+  alpha_before_trace = array(0, dim = c(n.image, ntotal))
+  alpha_after_trace = array(0, dim = c(n.image, ntotal))
+  beta_before_trace = array(0, dim = c(n.rater, ntotal))
+  beta_after_trace = array(0, dim = c(n.rater, ntotal))
+  c_before_trace = array(0, dim = c(L-1, ntotal))
+  c_after_trace = array(0, dim = c(L-1, ntotal))
+  sigma_a2_before_trace = sigma_b2_before_trace = sigma_e2_before_trace = rep(0,ntotal)
+  sigma_a2_after_trace = sigma_b2_after_trace = sigma_e2_after_trace = rep(0,ntotal)
+  x_before_trace = array(0, dim = c(n.rater, n.image, ntotal))
+  x_after_trace = array(0, dim = c(n.rater, n.image, ntotal))
+  
+  
+  
+  
+  # Run Gibbs
+  
+  for(mc in 1:ntotal){
+
+  
+    #Update latent scores
+    for(j in 1:n.image){
+      for(i in 1:n.rater){
+        
+        # before
+          u_before = alpha_before[j] + beta_before[i]
+          sd_before = sqrt(sigma_e2_before)
+          u1_before = pnorm(c_before[y_before[i,j]], u_before, sd_before)
+          u2_before = pnorm(c_before[(y_before[i,j] + 1)], u_before, sd_before)
+          impute.p_before = runif(1, u1_before, u2_before)
+          x_before[i,j] = qnorm(impute.p_before, u_before, sd_before) 
+          
+          # After
+          u_after = alpha_after[j] + beta_after[i]
+          sd_after = sqrt(sigma_e2_after)
+          u1_after = pnorm(c_after[y_after[i,j]], u_after, sd_after)
+          u2_after = pnorm(c_after[(y_after[i,j] + 1)], u_after, sd_after)
+          impute.p_after = runif(1, u1_after, u2_after)
+          x_after[i,j] = qnorm(impute.p_after, u_after, sd_after) 
+      }
+    }
+    x_before_trace[,,mc] = x_before
+    x_after_trace[,,mc] = x_after
+  
+    # Update Betas
+    for(i in 1:n.rater){
+      
+      # Before
+        u_before = 0
+        s_before = 1/sigma_b2_before
+        u_before = sum(x_before[i,]- alpha_before)/sigma_e2_before
+        s_before = s_before + n.image/sigma_e2_before
+        beta_before[i] = u_before/s_before + rnorm(1) / sqrt(s_before)
+        
+        # After
+        u_after = 0
+        s_after = 1/sigma_b2_after
+        u_after = sum(x_after[i,]- alpha_after)/sigma_e2_after
+        s_after = s_after + n.image/sigma_e2_after
+        beta_after[i] = u_after/s_after + rnorm(1) / sqrt(s_after)
+    }
+    
+    beta_before_trace[,mc] = beta_before
+    beta_after_trace[,mc] = beta_after
+    
+    
+    # Update Alphas
+    for(j in 1:n.image){   
+      
+      # Before
+      u_before = 0
+      s_before = 1/sigma_a2_before
+      u_before = sum(x_before[,j] - beta_before)/sigma_e2_before
+      s_before = s_before + n.rater/sigma_e2_before
+      alpha_before[j] = u_before/s_before + rnorm(1)/sqrt(s_before)
+      
+      # After
+      u_after = 0
+      s_after = 1/sigma_a2_after
+      u_after = sum(x_after[,j] - beta_after)/sigma_e2_after
+      s_after = s_after + n.rater/sigma_e2_after
+      alpha_after[j] = u_after/s_after + rnorm(1)/sqrt(s_after)
+    }
+    alpha_before_trace[,mc] = alpha_before
+    alpha_after_trace[,mc] = alpha_after
+    
+    
+    # Update Beta Variance
+    
+    # Before
+    sha_before = n.rater/2 + a           
+    sca_before = sum(beta_before^2)/2 + b
+    sigma_b2_before = sca_before/rgamma(1, shape = sha_before)
+    sigma_b2_before_trace[mc] = sigma_b2_before
+    
+    # After
+    sha_after = n.rater/2 + a           
+    sca_after = sum(beta_after^2)/2 + b
+    sigma_b2_after = sca_after/rgamma(1, shape = sha_after)
+    sigma_b2_after_trace[mc] = sigma_b2_after
+    
+    
+    
+    # Update Alpha Variance
+    
+    # Before
+    sha_before = n.image/2 + a
+    sca_before = sum(alpha_before^2)/2 + b
+    sigma_a2_before = sca_before/rgamma(1, shape = sha_before)
+    sigma_a2_before_trace[mc] = sigma_a2_before
+    
+    # After
+    sha_after = n.image/2 + a
+    sca_after = sum(alpha_after^2)/2 + b
+    sigma_a2_after = sca_after/rgamma(1, shape = sha_after)
+    sigma_a2_after_trace[mc] = sigma_a2_after
+    
+    
+    # Update error variance
+    
+    # Before
+    sha_before = n.rater*n.image/2 + a
+    sca_before = 0
+    for(j in 1:n.image) {sca_before = sca_before + sum((x_before[,j] - alpha_before[j] - beta_before)^2)}
+      sca_before = sca_before/2 + b
+      sigma_e2_before = sca_before/rgamma(1, shape = sha_before)
+      sigma_e2_before_trace[mc] = sigma_e2_before
+      
+    # After
+    sha_after = n.rater*n.image/2 + a
+    sca_after = 0
+    for(j in 1:n.image) {sca_after = sca_after + sum((x_after[,j] - alpha_after[j] - beta_after)^2)}
+      sca_after = sca_after/2 + b
+      sigma_e2_after = sca_after/rgamma(1, shape = sha_after)
+      sigma_e2_after_trace[mc] = sigma_e2_after
+    
+  
+  }
+  
+  icc_before_trace = sigma_a2_before_trace / (sigma_a2_before_trace + sigma_b2_before_trace + sigma_e2_before_trace)
+  icc_after_trace = sigma_a2_after_trace / (sigma_a2_after_trace + sigma_b2_after_trace + sigma_e2_after_trace)
+  icc_diff_trace = icc_after_trace - icc_before_trace
+  
+      return(list(alpha_before_trace,
+                alpha_after_trace, 
+                beta_before_trace, 
+                beta_after_trace, 
+                c_before_trace, 
+                c_after_trace, 
+                sigma_a2_before_trace,
+                sigma_b2_before_trace,
+                sigma_e2_before_trace,
+                sigma_a2_after_trace,
+                sigma_b2_after_trace,
+                sigma_e2_after_trace, 
+                x_before_trace,
+                x_after_trace,
+                icc_before_trace,
+                icc_after_trace,
+                icc_diff_trace))
+  
+}
+```
+
+
+
+
+# JAGS sampler No training
+
+```{r}
+Run_Jags_uncorr = function(Before, After, ntotal){
+
+library(R2jags)
+library(coda)
+
+  # Get number of images and graders
+  n.rater = nrow(Before)
+  n.image = ncol(Before)
+  
+  # Initialize ordinal before and after
+  y_before = as.matrix(Before)
+  y_after = as.matrix(After)
+  
+  # Number of ordina levels
+  L = max(y_before)
+  
+  # use the frequency to decide the cutoffs before
+  y_before.freq = table(y_before)/sum(table(y_before))
+  c_before = 0:L
+  c_before[1] = qnorm(y_before.freq[1])
+  c_before[2] = qnorm(sum(y_before.freq[1:2]))
+  c_before[3] = qnorm(sum(y_before.freq[1:3]))
+  c_before[4] = qnorm(sum(y_before.freq[1:4]))
+
+  
+  
+  # use the frequency to decide the cutoffs after
+  y_after.freq = table(y_after)/sum(table(y_after))
+  c_after = 0:L
+  c_after[1] = qnorm(y_after.freq[1])
+  c_after[2] = qnorm(sum(y_after.freq[1:2]))
+  c_after[3] = qnorm(sum(y_after.freq[1:3]))
+  c_after[4] = qnorm(sum(y_after.freq[1:4]))
+
+
+Jags_String <- "
+model{
+
+  for (i in 1:N) {
+    for (j in 1:J) {
+  
+    x_before[i, j] <- alpha_before[j] + beta_before[i]
+    x_after[i, j] <- alpha_after[j] + beta_after[i]
+    
+    # Probability of being in the lowest category
+    pr_before[i, j, 1] <- pnorm(c_before[1], x_before[i, j], tau_e_before) 
+    pr_after[i, j, 1] <- pnorm(c_after[1], x_after[i, j], tau_e_after) 
+    
+    # Probability of being in the other categories
+      for (k in 2:(K-1)) {
+        pr_before[i, j, k] <- pnorm(c_before[k], x_before[i, j], tau_e_before) - pnorm(c_before[k-1], x_before[i, j], tau_e_before) 
+        pr_after[i, j, k] <- pnorm(c_after[k], x_after[i, j], tau_e_after) - pnorm(c_after[k-1], x_after[i, j], tau_e_after) 
+    }
+
+    # Probability of being in the highest category
+    pr_before[i, j, K] <- 1 - pnorm(c_before[K-1], x_before[i, j], tau_e_before) 
+    pr_after[i, j, K] <- 1 - pnorm(c_after[K-1], x_after[i, j], tau_e_after) 
+    
+    y_before[i, j] ~ dcat(pr_before[i, j, 1:K]) # Assume the response follows a categorical distribution
+    y_after[i, j] ~ dcat(pr_after[i, j, 1:K]) 
+    
+    }
+  }
+  
+
+  # Image effects
+  for (j in 1:J) {
+    alpha_before[j] ~ dnorm(0, tau_a_before)
+    alpha_after[j] ~ dnorm(0, tau_a_after)
+  }
+
+  # Grader effects
+  for (i in 1:N) {
+    beta_before[i] ~ dnorm(0, tau_b_before)  
+    beta_after[i] ~ dnorm(0, tau_b_after)
+  }
+  
+  # Prior for the precision
+  tau_a_before ~ dgamma(2.1, 0.35)  
+  tau_b_before ~ dgamma(2.1, 0.35)  
+  tau_e_before ~ dgamma(2.1, 0.35) 
+  tau_a_after ~ dgamma(2.1, 0.35)  
+  tau_b_after ~ dgamma(2.1, 0.35)  
+  tau_e_after ~ dgamma(2.1, 0.35) 
+
+  # Turn into variance
+  sigma_a2_before <- 1 / tau_a_before
+  sigma_b2_before <- 1 / tau_b_before
+  sigma_e2_before <- 1 / tau_e_before
+  sigma_a2_after <- 1 / tau_a_after
+  sigma_b2_after <- 1 / tau_b_after
+  sigma_e2_after <- 1 / tau_e_after
+
+  # Sample the ICC
+  ICC_before <- sigma_a2_before / (sigma_a2_before + sigma_b2_before + sigma_e2_before)
+  ICC_after <- sigma_a2_after / (sigma_a2_after + sigma_b2_after + sigma_e2_after)
+  ICC_diff <- ICC_after - ICC_before
+}
+"
+
+# JAGS data list
+jags_data = list(
+  y_before = y_before, 
+  y_after = y_after,
+  N = n.rater,
+  J = n.image,
+  K = L,
+  c_before = c_before,
+  c_after = c_after
+)
+
+# JAGS model
+jags_fit <- jags(
+  data = jags_data,
+  parameters.to.save = c("sigma_a2_before", "sigma_b2_before", "sigma_e2_before","sigma_a2_after", "sigma_b2_after", "sigma_e2_after", "ICC_before", "ICC_after", "ICC_diff"),
+  model.file = textConnection(Jags_String),
+  n.chains = 1,
+  n.iter = ntotal,
+  n.burnin = 0,
+  n.thin = 1
+)
+
+
+
+mcmc_samples = as.mcmc(jags_fit)
+
+return(mcmc_samples)
+
+
+}
+```
+
+
+
+
+
+
+
+
+
+# Gibbs Bad Sampler No training
+
+
+```{r}
+Run_Bad_uncorr = function(Before, After, ntotal){
+  
+  # Get number of images and graders
+  n.rater = nrow(Before)
+  n.image = ncol(Before)
+  
+  # Initialize ordinal before and after
+  y_before = as.matrix(Before)
+  y_after = as.matrix(After)
+  x_before = (y_before-mean(y_before))/sd(y_before)
+  x_after = (y_after-mean(y_after))/sd(y_after)
+  
+  # Number of ordina levels
+  L = max(y_before)
+  
+  
+  # Initial values
+  alpha_before = rep(0, n.image)
+  alpha_after = rep(0, n.image)
+  beta_before = rep(0, n.rater)
+  beta_after = rep(0, n.rater)
+  sigma_a2_before = sigma_b2_before = sigma_e2_before = 1
+  sigma_a2_after = sigma_b2_after = sigma_e2_after = 1
+  a = 0.1
+  b = 0.1
+  
+  # Storage
+  alpha_before_trace = array(0, dim = c(n.image, ntotal))
+  alpha_after_trace = array(0, dim = c(n.image, ntotal))
+  beta_before_trace = array(0, dim = c(n.rater, ntotal))
+  beta_after_trace = array(0, dim = c(n.rater, ntotal))
+  sigma_a2_before_trace = sigma_b2_before_trace = sigma_e2_before_trace = rep(0,ntotal)
+  sigma_a2_after_trace = sigma_b2_after_trace = sigma_e2_after_trace = rep(0,ntotal)
+  x_before_trace = array(0, dim = c(n.rater, n.image, ntotal))
+  x_after_trace = array(0, dim = c(n.rater, n.image, ntotal))
+  
+  
+  
+  
+  # Run Gibbs
+  
+  for(mc in 1:ntotal){
+
+    # Update Betas
+    for(i in 1:n.rater){
+      
+      # Before
+        u_before = 0
+        s_before = 1/sigma_b2_before
+        u_before = sum(x_before[i,]- alpha_before)/sigma_e2_before
+        s_before = s_before + n.image/sigma_e2_before
+        beta_before[i] = u_before/s_before + rnorm(1) / sqrt(s_before)
+        
+        # After
+        u_after = 0
+        s_after = 1/sigma_b2_after
+        u_after = sum(x_after[i,]- alpha_after)/sigma_e2_after
+        s_after = s_after + n.image/sigma_e2_after
+        beta_after[i] = u_after/s_after + rnorm(1) / sqrt(s_after)
+    }
+    
+    beta_before_trace[,mc] = beta_before
+    beta_after_trace[,mc] = beta_after
+    
+    
+    # Update Alphas
+    for(j in 1:n.image){   
+      
+      # Before
+      u_before = 0
+      s_before = 1/sigma_a2_before
+      u_before = sum(x_before[,j] - beta_before)/sigma_e2_before
+      s_before = s_before + n.rater/sigma_e2_before
+      alpha_before[j] = u_before/s_before + rnorm(1)/sqrt(s_before)
+      
+      # After
+      u_after = 0
+      s_after = 1/sigma_a2_after
+      u_after = sum(x_after[,j] - beta_after)/sigma_e2_after
+      s_after = s_after + n.rater/sigma_e2_after
+      alpha_after[j] = u_after/s_after + rnorm(1)/sqrt(s_after)
+    }
+    alpha_before_trace[,mc] = alpha_before
+    alpha_after_trace[,mc] = alpha_after
+    
+    
+    # Update Beta Variance
+    
+    # Before
+    sha_before = n.rater/2 + a           
+    sca_before = sum(beta_before^2)/2 + b
+    sigma_b2_before = sca_before/rgamma(1, shape = sha_before)
+    sigma_b2_before_trace[mc] = sigma_b2_before
+    
+    # After
+    sha_after = n.rater/2 + a           
+    sca_after = sum(beta_after^2)/2 + b
+    sigma_b2_after = sca_after/rgamma(1, shape = sha_after)
+    sigma_b2_after_trace[mc] = sigma_b2_after
+    
+    
+    
+    # Update Alpha Variance
+    
+    # Before
+    sha_before = n.image/2 + a
+    sca_before = sum(alpha_before^2)/2 + b
+    sigma_a2_before = sca_before/rgamma(1, shape = sha_before)
+    sigma_a2_before_trace[mc] = sigma_a2_before
+    
+    # After
+    sha_after = n.image/2 + a
+    sca_after = sum(alpha_after^2)/2 + b
+    sigma_a2_after = sca_after/rgamma(1, shape = sha_after)
+    sigma_a2_after_trace[mc] = sigma_a2_after
+    
+    
+    # Update error variance
+    
+    # Before
+    sha_before = n.rater*n.image/2 + a
+    sca_before = 0
+    for(j in 1:n.image) {sca_before = sca_before + sum((x_before[,j] - alpha_before[j] - beta_before)^2)}
+      sca_before = sca_before/2 + b
+      sigma_e2_before = sca_before/rgamma(1, shape = sha_before)
+      sigma_e2_before_trace[mc] = sigma_e2_before
+      
+    # After
+    sha_after = n.rater*n.image/2 + a
+    sca_after = 0
+    for(j in 1:n.image) {sca_after = sca_after + sum((x_after[,j] - alpha_after[j] - beta_after)^2)}
+      sca_after = sca_after/2 + b
+      sigma_e2_after = sca_after/rgamma(1, shape = sha_after)
+      sigma_e2_after_trace[mc] = sigma_e2_after
+    
+  
+  }
+  
+  icc_before_trace = sigma_a2_before_trace / (sigma_a2_before_trace + sigma_b2_before_trace + sigma_e2_before_trace)
+  icc_after_trace = sigma_a2_after_trace / (sigma_a2_after_trace + sigma_b2_after_trace + sigma_e2_after_trace)
+  icc_diff_trace = icc_after_trace - icc_before_trace
+  
+      return(list(alpha_before_trace,
+                alpha_after_trace, 
+                beta_before_trace, 
+                beta_after_trace, 
+                sigma_a2_before_trace,
+                sigma_b2_before_trace,
+                sigma_e2_before_trace,
+                sigma_a2_after_trace,
+                sigma_b2_after_trace,
+                sigma_e2_after_trace, 
+                x_before_trace,
+                x_after_trace,
+                icc_before_trace,
+                icc_after_trace,
+                icc_diff_trace))
+  
+}
+```
+
+
+
+
+
+
+
+# JAGS training (Wishart prior)
+
+```{r}
+Run_Jags_Paired_Wishart = function(Before, After, ntotal){
+
+library(R2jags)
+library(coda)
+
+  # Get number of images and graders
+  n.rater = nrow(Before)
+  n.image = ncol(Before)
+  
+  # Initialize ordinal before and after
+  y_before = as.matrix(Before)
+  y_after = as.matrix(After)
+  
+  # Number of ordina levels
+  L = max(y_before)
+  
+  # use the frequency to decide the cutoffs before
+  y_before.freq = table(y_before)/sum(table(y_before))
+  c_before = 0:L
+  c_before[1] = qnorm(y_before.freq[1])
+  c_before[2] = qnorm(sum(y_before.freq[1:2]))
+  c_before[3] = qnorm(sum(y_before.freq[1:3]))
+  c_before[4] = qnorm(sum(y_before.freq[1:4]))
+
+  
+  
+  # use the frequency to decide the cutoffs after
+  y_after.freq = table(y_after)/sum(table(y_after))
+  c_after = 0:L
+  c_after[1] = qnorm(y_after.freq[1])
+  c_after[2] = qnorm(sum(y_after.freq[1:2]))
+  c_after[3] = qnorm(sum(y_after.freq[1:3]))
+  c_after[4] = qnorm(sum(y_after.freq[1:4]))
+  
+  R_alpha = diag(2)/3
+  R_beta = diag(2)/3
+
+
+Jags_String <- "
+model{
+
+  for (i in 1:N) {
+    for (j in 1:J) {
+  
+    x_before[i, j] <- alpha[j, 1] + beta[i, 1]
+    x_after[i, j] <- alpha[j, 2] + beta[i, 2]
+    
+    # Probability of being in the lowest category
+    pr_before[i, j, 1] <- pnorm(c_before[1], x_before[i, j], tau_e_before) 
+    pr_after[i, j, 1] <- pnorm(c_after[1], x_after[i, j], tau_e_after) 
+    
+    # Probability of being in the other categories
+      for (k in 2:(K-1)) {
+        pr_before[i, j, k] <- pnorm(c_before[k], x_before[i, j], tau_e_before) - pnorm(c_before[k-1], x_before[i, j], tau_e_before) 
+        pr_after[i, j, k] <- pnorm(c_after[k], x_after[i, j], tau_e_after) - pnorm(c_after[k-1], x_after[i, j], tau_e_after) 
+    }
+
+    # Probability of being in the highest category
+    pr_before[i, j, K] <- 1 - pnorm(c_before[K-1], x_before[i, j], tau_e_before) 
+    pr_after[i, j, K] <- 1 - pnorm(c_after[K-1], x_after[i, j], tau_e_after) 
+    
+    y_before[i, j] ~ dcat(pr_before[i, j, 1:K]) # Assume the response follows a categorical distribution
+    y_after[i, j] ~ dcat(pr_after[i, j, 1:K]) 
+    
+    }
+  }
+  
+
+  # Image effects
+  for (j in 1:J) {
+    alpha[j,1:2] ~ dmnorm(c(0, 0), tau_alpha)
+  }
+
+  # Grader effects
+  for (i in 1:N) {
+    beta[i,1:2] ~ dmnorm(c(0, 0), tau_beta)
+  }
+  
+  # Prior for the variances
+  tau_alpha[1:2, 1:2] ~ dwish(R_alpha, 3) 
+  tau_beta[1:2, 1:2] ~ dwish(R_beta, 3)
+  tau_e_before ~ dgamma(2.1, 0.35) 
+  tau_e_after ~ dgamma(2.1, 0.35) 
+
+  # Turn into precision
+  Sigma_alpha[1:2,1:2] <- inverse(tau_alpha[,])
+  Sigma_beta[1:2,1:2] <- inverse(tau_beta[,])
+  sigma_e2_before <- 1 / tau_e_before
+  sigma_e2_after <- 1 / tau_e_after
+
+
+  # Sample the ICC
+  ICC_before <- Sigma_alpha[1,1] / (Sigma_alpha[1,1] + Sigma_beta[1,1] + sigma_e2_before)
+  ICC_after <- Sigma_alpha[2,2] / (Sigma_alpha[2,2] + Sigma_beta[2,2] + sigma_e2_after)
+  ICC_diff <- ICC_after - ICC_before
+  
+  rho_alpha <- Sigma_alpha[1,2]/sqrt(Sigma_alpha[1,1] * Sigma_alpha[2,2])
+  rho_beta <- Sigma_beta[1,2]/sqrt(Sigma_beta[1,1] * Sigma_beta[2,2])
+}
+"
+
+# JAGS data list
+jags_data = list(
+  y_before = y_before, 
+  y_after = y_after,
+  N = n.rater,
+  J = n.image,
+  K = L,
+  c_before = c_before,
+  c_after = c_after,
+  R_alpha = R_alpha,
+  R_beta = R_beta
+)
+
+# JAGS model
+jags_fit <- jags(
+  data = jags_data,
+  parameters.to.save = c("Sigma_alpha", "Sigma_beta", "sigma_e2_before", "sigma_e2_after","ICC_before", "ICC_after", "ICC_diff", 'rho_alpha', 'rho_beta'),
+  model.file = textConnection(Jags_String),
+  n.chains = 1,
+  n.iter = ntotal,
+  n.burnin = 0,
+  n.thin = 1
+)
+
+
+
+mcmc_samples = as.mcmc(jags_fit)
+
+return(mcmc_samples)
+
+
+}
+
+
+
+
+
+
+```
+
+
+
+
+
+# JAGS training (Individual components)
+
+
+```{r}
+Run_Jags_Paired_ind = function(Before, After, ntotal){
+
+library(R2jags)
+library(coda)
+
+  # Get number of images and graders
+  n.rater = nrow(Before)
+  n.image = ncol(Before)
+  
+  # Initialize ordinal before and after
+  y_before = as.matrix(Before)
+  y_after = as.matrix(After)
+  
+  # Number of ordina levels
+  L = max(y_before)
+  
+  # use the frequency to decide the cutoffs before
+  y_before.freq = table(y_before)/sum(table(y_before))
+  c_before = 0:L
+  c_before[1] = qnorm(y_before.freq[1])
+  c_before[2] = qnorm(sum(y_before.freq[1:2]))
+  c_before[3] = qnorm(sum(y_before.freq[1:3]))
+  c_before[4] = qnorm(sum(y_before.freq[1:4]))
+
+  
+  
+  # use the frequency to decide the cutoffs after
+  y_after.freq = table(y_after)/sum(table(y_after))
+  c_after = 0:L
+  c_after[1] = qnorm(y_after.freq[1])
+  c_after[2] = qnorm(sum(y_after.freq[1:2]))
+  c_after[3] = qnorm(sum(y_after.freq[1:3]))
+  c_after[4] = qnorm(sum(y_after.freq[1:4]))
+  
+
+Jags_String <- "
+model{
+
+  for (i in 1:N) {
+    for (j in 1:J) {
+  
+    x_before[i, j] <- alpha[j, 1] + beta[i, 1]
+    x_after[i, j] <- alpha[j, 2] + beta[i, 2]
+    
+    # Probability of being in the lowest category
+    pr_before[i, j, 1] <- pnorm(c_before[1], x_before[i, j], tau_e_before) 
+    pr_after[i, j, 1] <- pnorm(c_after[1], x_after[i, j], tau_e_after) 
+    
+    # Probability of being in the other categories
+      for (k in 2:(K-1)) {
+        pr_before[i, j, k] <- pnorm(c_before[k], x_before[i, j], tau_e_before) - pnorm(c_before[k-1], x_before[i, j], tau_e_before) 
+        pr_after[i, j, k] <- pnorm(c_after[k], x_after[i, j], tau_e_after) - pnorm(c_after[k-1], x_after[i, j], tau_e_after) 
+    }
+
+    # Probability of being in the highest category
+    pr_before[i, j, K] <- 1 - pnorm(c_before[K-1], x_before[i, j], tau_e_before) 
+    pr_after[i, j, K] <- 1 - pnorm(c_after[K-1], x_after[i, j], tau_e_after) 
+    
+    y_before[i, j] ~ dcat(pr_before[i, j, 1:K]) # Assume the response follows a categorical distribution
+    y_after[i, j] ~ dcat(pr_after[i, j, 1:K]) 
+    
+    }
+  }
+  
+
+  # Image effects
+  for (j in 1:J) {
+    alpha[j,1:2] ~ dmnorm(c(0, 0), tau_alpha)
+  }
+
+  # Grader effects
+  for (i in 1:N) {
+    beta[i,1:2] ~ dmnorm(c(0, 0), tau_beta)
+  }
+  
+  # Prior for correlations
+  
+  rho_alpha ~ dunif(-1, 1)
+  rho_beta ~ dunif(-1, 1)
+  
+  # Prior for the variances
+  
+  tau_a_before ~ dgamma(2.1, 0.35) 
+  tau_a_after ~ dgamma(2.1, 0.35) 
+  tau_b_before ~ dgamma(2.1, 0.35) 
+  tau_b_after ~ dgamma(2.1, 0.35) 
+  tau_e_before ~ dgamma(2.1, 0.35) 
+  tau_e_after ~ dgamma(2.1, 0.35) 
+
+  # Turn into precision
+  
+  sigma_e2_before <- 1 / tau_e_before
+  sigma_e2_after <- 1 / tau_e_after
+  
+  # Matricies
+  
+  tau_alpha[1,1] <- tau_a_before
+  tau_alpha[1,2] <- rho_alpha * sqrt(tau_a_before) * sqrt(tau_a_after)
+  tau_alpha[2,1] <- rho_alpha * sqrt(tau_a_before) * sqrt(tau_a_after)
+  tau_alpha[2,2] <- tau_a_after
+  
+  tau_beta[1,1] <- tau_b_before
+  tau_beta[1,2] <- rho_beta * sqrt(tau_b_before) * sqrt(tau_b_after)
+  tau_beta[2,1] <- rho_beta * sqrt(tau_b_before) * sqrt(tau_b_after)
+  tau_beta[2,2] <- tau_b_after
+  
+  Sigma_alpha[1:2,1:2] <- inverse(tau_alpha[,])
+  Sigma_beta[1:2,1:2] <- inverse(tau_beta[,])
+
+
+
+  # Sample the ICC
+  ICC_before <- Sigma_alpha[1,1] / (Sigma_alpha[1,1] + Sigma_beta[1,1] + sigma_e2_before)
+  ICC_after <- Sigma_alpha[2,2] / (Sigma_alpha[2,2] + Sigma_beta[2,2] + sigma_e2_after)
+  ICC_diff <- ICC_after - ICC_before
+}
+"
+
+# JAGS data list
+jags_data = list(
+  y_before = y_before, 
+  y_after = y_after,
+  N = n.rater,
+  J = n.image,
+  K = L,
+  c_before = c_before,
+  c_after = c_after
+)
+
+# JAGS model
+jags_fit <- jags(
+  data = jags_data,
+  parameters.to.save = c("Sigma_alpha", "Sigma_beta", "sigma_e2_before", "sigma_e2_after","ICC_before", "ICC_after", "ICC_diff", 'rho_alpha', 'rho_beta'),
+  model.file = textConnection(Jags_String),
+  n.chains = 1,
+  n.iter = ntotal,
+  n.burnin = 0,
+  n.thin = 1
+)
+
+
+
+mcmc_samples = as.mcmc(jags_fit)
+
+return(mcmc_samples)
+
+
+}
+
+
+
+
+
+
+```
+
+
+
+
+
+
+# Jags training (Bad)
+
+
+```{r}
+Run_Bad_corr = function(Before, After, ntotal){
+
+library(R2jags)
+library(coda)
+
+  # Get number of images and graders
+  n.rater = nrow(Before)
+  n.image = ncol(Before)
+  
+  # Initialize ordinal before and after
+  y_before = as.matrix(Before)
+  y_after = as.matrix(After)
+  
+  x_before = (y_before-mean(y_before))/sd(y_before)
+  x_after = (y_after-mean(y_after))/sd(y_after)
+  
+  R_alpha = diag(2)/3
+  R_beta = diag(2)/3
+  
+
+
+Jags_String <- "
+model{
+
+  for (i in 1:N) {
+    for (j in 1:J) {
+  
+    x_before[i, j] ~ dnorm(alpha[j, 1] + beta[i, 1], tau_e_before)
+    x_after[i, j] ~ dnorm(alpha[j, 2] + beta[i, 2], tau_e_after)
+    
+    
+    }
+  }
+  
+
+  # Image effects
+  for (j in 1:J) {
+    alpha[j,1:2] ~ dmnorm(c(0, 0), tau_alpha)
+  }
+
+  # Grader effects
+  for (i in 1:N) {
+    beta[i,1:2] ~ dmnorm(c(0, 0), tau_beta)
+  }
+  
+  # Prior for the variances
+  tau_alpha[1:2, 1:2] ~ dwish(R_alpha, 3) 
+  tau_beta[1:2, 1:2] ~ dwish(R_beta, 3)
+  tau_e_before ~ dgamma(2.1, 0.35) 
+  tau_e_after ~ dgamma(2.1, 0.35) 
+
+  # Turn into precision
+  Sigma_alpha[1:2,1:2] <- inverse(tau_alpha[,])
+  Sigma_beta[1:2,1:2] <- inverse(tau_beta[,])
+  sigma_e2_before <- 1 / tau_e_before
+  sigma_e2_after <- 1 / tau_e_after
+
+
+  # Sample the ICC
+  ICC_before <- Sigma_alpha[1,1] / (Sigma_alpha[1,1] + Sigma_beta[1,1] + sigma_e2_before)
+  ICC_after <- Sigma_alpha[2,2] / (Sigma_alpha[2,2] + Sigma_beta[2,2] + sigma_e2_after)
+  ICC_diff <- ICC_after - ICC_before
+  
+  rho_alpha <- Sigma_alpha[1,2]/sqrt(Sigma_alpha[1,1] * Sigma_alpha[2,2])
+  rho_beta <- Sigma_beta[1,2]/sqrt(Sigma_beta[1,1] * Sigma_beta[2,2])
+}
+"
+
+# JAGS data list
+jags_data = list(
+  x_before = x_before, 
+  x_after = x_after,
+  N = n.rater,
+  J = n.image,
+  R_beta = R_beta,
+  R_alpha = R_alpha
+)
+
+# JAGS model
+jags_fit <- jags(
+  data = jags_data,
+  parameters.to.save = c("Sigma_alpha", "Sigma_beta", "sigma_e2_before", "sigma_e2_after","ICC_before", "ICC_after", "ICC_diff", 'rho_alpha', 'rho_beta'),
+  model.file = textConnection(Jags_String),
+  n.chains = 1,
+  n.iter = ntotal,
+  n.burnin = 0,
+  n.thin = 1
+)
+
+
+
+mcmc_samples = as.mcmc(jags_fit)
+
+return(mcmc_samples)
+
+
+}
+```
+
+
